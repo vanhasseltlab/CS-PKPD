@@ -12,11 +12,11 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   require(dplyr)
   require(tidyr)
   
-  is.wholenumber <- function(x, tol = .Machine$double.eps^0.5)  abs(x - round(x)) < tol
+  is.wholenumber <- function(x, tol = .Machine$double.eps^0.5)  abs(x - round(x)) < tol  # need to check for whole numbers later
   
   # argument explanation
   # t_half; half life used for both drugs [h]
-  # F_Css_MIC scaling; factor to obtain Css avrage equal to X time MIC WT
+  # F_Css_MIC scaling; factor to obtain Css average equal to X time MIC WT
   # FIT; Fitness cost (0-1), 1 no cost, 0 no growth 
   # CS_A ; CS factor use for change in susceptibility towards A
   # CS_B ; CS factor use for change in susceptibility towards B
@@ -37,28 +37,31 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   # ST; Duration of simulation [h]
   
   
-  start_t <- Sys.time()
+  start_t <- Sys.time()  #for checking run time
   
   ##############
   ## PK Model ##
   ##############
   
   #Define PK parameters and dosing, assume same PK for both drugs
+  # 1 CMT kinetics i.v adm. 
   
   
-  Vd = 1 #L
-  ke = log(2)/t_half
-  CL = ke*Vd
-  Tau = 12  # currently not a function argument (TBD).
+  Vd = 1                  # [L] volume of distribution. (arbitrary) 
+  ke = log(2)/t_half      # [h^-1] elimination rate constant, calculated by half-life
+  CL = ke*Vd              # [L/h] clearance 
+  Tau = 12                # [h] dosing interval
   MIC = 1
   
-  Css = MIC*F_Css_MIC
+  Css = MIC*F_Css_MIC     # [mg/L] Target average steady-state concentration 
   
-  Dose = Css*CL*Tau
+  Dose = Css*CL*Tau       # [mg] dose giving target Css
   
   
   
+  # PK model for antibiotic A and B 
   # ODE
+
   
   PK_mod<- RxODE({
     
@@ -71,9 +74,11 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   
   PK_inits <- c(A = 0, B = 0);
   
-  PK_theta <- c(ke = ke) # PK elimination rate constant)
+  PK_theta <- c(ke = ke)
   
   ### Dosing regimens
+  # specified using argument v_Models
+  # All uses same Tau and dose, except combination, which uses dose/2 for each AB
   ######
   
   
@@ -81,7 +86,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   
   PK_model_list <- list()
   
-  if( "Mono A" %in% v_Models){
+  if( "Mono A" %in% v_Models){  
     
     ev_PK_A <- eventTable(amount.units="mg", time.units="hours") %>%
       add.dosing(dosing.to = 1, dose=Dose, nbr.doses=ST/Tau, dosing.interval=Tau) %>%
@@ -195,11 +200,13 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   
   #------------------------------------------#
   
-  
-  
+
   ##############
   ## PD Model ##
   ##############
+  
+  # 4 state model including S (= WT), RA, RB, RARA (=RAB)
+  # PK-PD of AB A and B
   
   #ODE
   CS_mod<- RxODE({
@@ -207,9 +214,10 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
     ###PD#####
     
     #Sensitive wild type
+    
     d/dt(S) = S*(1-((S+RA+RB+RARB)/10^Bmax))*KG*(1-
-                                                   ((Gmax - Gmin_A)*(A/MIC_S)^HILL_A/((A/MIC_S)^HILL_A - (Gmin_A/Gmax)))   -
-                                                   ((Gmax - Gmin_B)*(B/MIC_S)^HILL_B/((B/MIC_S)^HILL_B - (Gmin_B/Gmax))))  -
+                                                   ((Gmax - Gmin_A/KG)*(A/MIC_S)^HILL_A/((A/MIC_S)^HILL_A - (Gmin_A/KG/Gmax)))   -
+                                                   ((Gmax - Gmin_B/KG)*(B/MIC_S)^HILL_B/((B/MIC_S)^HILL_B - (Gmin_B/KG/Gmax))))  -
       GR_SRA/V -
       GR_SRB/V -
       
@@ -218,24 +226,24 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
     
     # Single resistant mutants to antibiotic A
     d/dt(RA) = RA*(1-((S+RA+RB+RARB)/10^Bmax))*KG*FIT*(1-
-                                                         ((Gmax - Gmin_A)*(A/MIC_R)^HILL_A/((A/MIC_R)^HILL_A - (Gmin_A/Gmax))) -
-                                                         ((Gmax - Gmin_B)*(B/(MIC_S*CS_B))^HILL_B/((B/(MIC_S*CS_B))^HILL_B - (Gmin_B/Gmax)))) +
+                                                         ((Gmax - Gmin_A/(KG*FIT))*(A/MIC_R)^HILL_A/((A/MIC_R)^HILL_A - (Gmin_A/(KG*FIT)/Gmax))) -
+                                                         ((Gmax - Gmin_B/(KG*FIT))*(B/(MIC_S*CS_B))^HILL_B/((B/(MIC_S*CS_B))^HILL_B - (Gmin_B/(KG*FIT)/Gmax)))) +
       GR_SRA/V - 
       GR_RARARB/V -
       ke_bac*RA
     
     # Single resistant mutants to antibiotic B
     d/dt(RB) = RB*(1-((S+RA+RB+RARB)/10^Bmax))*KG*FIT*(1 - 
-                                                         ((Gmax - Gmin_A)*(A/(MIC_S*CS_A))^HILL_A/((A/(MIC_S*CS_A))^HILL_A - (Gmin_A/Gmax))) -
-                                                         ((Gmax - Gmin_B)*(B/MIC_R)^HILL_B/((B/MIC_R)^HILL_B - (Gmin_B/Gmax)))) +
+                                                         ((Gmax - Gmin_A/(KG*FIT))*(A/(MIC_S*CS_A))^HILL_A/((A/(MIC_S*CS_A))^HILL_A - (Gmin_A/(KG*FIT)/Gmax))) -
+                                                         ((Gmax - Gmin_B/(KG*FIT))*(B/MIC_R)^HILL_B/((B/MIC_R)^HILL_B - (Gmin_B/(KG*FIT)/Gmax)))) +
       GR_SRB/V - 
       GR_RBRARB/V -
       ke_bac*RB
     
     # Double resistant mutants to antibiotic A and B
     d/dt(RARB) = RARB*(1-((S+RA+RB+RARB)/10^Bmax))*KG*FIT*FIT*(1 -
-                                                                 ((Gmax - Gmin_A)*(A/MIC_R)^HILL_A/((A/MIC_R)^HILL_A - (Gmin_A/Gmax)))-
-                                                                 ((Gmax - Gmin_B)*(B/MIC_R)^HILL_B/((B/MIC_R)^HILL_B - (Gmin_B/Gmax)))) +
+                                                                 ((Gmax - Gmin_A/(KG*FIT*FIT))*(A/MIC_R)^HILL_A/((A/MIC_R)^HILL_A - (Gmin_A/(KG*FIT*FIT)/Gmax)))-
+                                                                 ((Gmax - Gmin_B/(KG*FIT*FIT))*(B/MIC_R)^HILL_B/((B/MIC_R)^HILL_B - (Gmin_B/(KG*FIT*FIT)/Gmax)))) +
       GR_RARARB/V + 
       GR_RBRARB/V-
       ke_bac*RARB
@@ -252,49 +260,47 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   
   
   
-  S0  <- (10^eB0)*(1-RA0 - RB0 - RAB0)
-  U_1 <- u_1
-  U_2 <- u_2
+  S0  <- (10^eB0)*(1-RA0 - RB0 - RAB0)  # starting bacterial density [cfu/ml] of sensitive bacteria (S) = WT)
+  U_1 <- u_1  # Mutation rate [mutation/bacteria/hour] of first mutation step
+  U_2 <- u_2  #  Mutation rate [mutation/bacteria/hour] of second mutation step (U_1 = U_2)
   
   theta <- c(
     #system specific
     Bmax = Bmax,  # maximum carrying capacity 
     KG = 0.7,   # maximal net growth, --> doubling time 1 h
     FIT = FIT,  # fitness cost per resistance
-    ke_bac = 0, # Assume no non antibiotic bacterial CL
+    ke_bac = 0, # Assume no non-antibiotic bacterial CL
     V     = V,    #Volume of infection (not PK related)
     
     #Drug-system hybrid parameters
     Gmax = 1, 
-    Gmin_A = Gmin_A,
-    Gmin_B = Gmin_B,
-    HILL_A = HILL_A,
-    HILL_B = HILL_B,
+    Gmin_A = Gmin_A,    # Maximum drug effect , i.e. type of effect
+    Gmin_B = Gmin_B,    # Maximum drug effect , i.e. type of effect
+    HILL_A = HILL_A,    # shape factor, i.e. type of effect driver 
+    HILL_B = HILL_B,    # shape factor, i.e. type of effect driver 
     
     MIC_S = 1,  #MIC if sensitive
     MIC_R = 10, #MIC if resistant
     
-    CS_A  = CS_A, 
-    CS_B  = CS_B, 
+    CS_A  = CS_A, #CS factor AB A
+    CS_B  = CS_B,  #CS factor AB B
     
     #Drug specific
     ke    = ke)  #PK elimination rate constant))
   
   
-  n_obs  <- ST*DT+1
-  n_models <- length(PK_model_list)
+  n_obs  <- ST*DT+1   # number of observations ( simulation time(ST) * time step size (DT))
+  n_models <- length(PK_model_list) #which models (i.e. dosing regimens) to simulate
   
-  df_full_CS <-  foreach( ii = 1:n, .combine = "rbind", 
+  df_full_CS <-  foreach( ii = 1:n, .combine = "rbind",              #parallelization by realization
                           .packages = c("RxODE", "dplyr", "tidyr"),
                           
                           .inorder = F,
-                          .options.RNG = 123) %dorng%  {
+                          .options.RNG = 123) %dorng%  {            # setting seed
                             
                             
-                            # cat(paste("in index =", ii, "\n"), file = "Results/logs/start_log", append = T)
-                            
-                            i_time <- Sys.time() 
-                            
+                                          #i_time <- Sys.time()
+                           #Creating empty data frame to combined simulation data per realization ii
                             df_model_CS <- data.frame(time  = NA,
                                                       S     = NA,
                                                       RA    = NA,
@@ -307,7 +313,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                             for(i_mod in 1:length(PK_model_list)) {
                               #   #   
                               PK_mod = PK_model_list[[i_mod]]
-                              
+                              #Creating empty data frame to  be populated with simulated data per dosing regimen i_mode for realization ii
                               
                               df_CS <- data.frame(time = rep(x = NA, times = n_obs),
                                                   S    = rep(x = NA, times = n_obs),
@@ -320,101 +326,103 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                               
                               
                               
-                              
-                              df_CS[1,] <- data.frame(time = 0, S = S0, RA = RA0, RB = RB0, RARB = RAB0,
+                              #population t = 0
+                              df_CS[1,] <- data.frame(time = 0, S = S0, RA = RA0*S0, RB = RB0*S0, RARB = RAB0*S0,
                                                       A = PK_mod$A[1], B = PK_mod$B[1]);
                               
                               V = V
                               #########
+                              # running the simulation one time step at the time (i) needed for the stochastic implementaion for mutation rate
+                              
                               for (i in 1:(ST*DT)) {
                                 
-                                #Previous time points
-                                #cat(paste("ID = ", ii, "time = ", i, df_CS$S[i], df_CS$RA[i], df_CS$RB[i], df_CS$RARB[i], "\n"), file = "Results/logs/mid3_log", append = T)
-                                # 
+                               #assigning and checking previous time point for each subpopulation
+                                
+                                # is S NA?, set to 0
                                 if(is.na(df_CS$S[i])){
                                   S_t    <- 0
                                   
                                   
                                 }
-                                
+                                #is the total number of S bacteria larger than 1? , if not set to 0  (protects form running into small number errors)
                                 else if(df_CS$S[i]*V>=1) {
                                   S_t  <-  df_CS$S[i]
                                 } else{
                                   S_t    <- 0}
                                 
                                 
-                                
+                                # is RA NA?, set to 0
                                 if(is.na(df_CS$RA[i])){
                                   RA_t    <- 0
                                   
                                 }
-                                
+                                #is the total number of RA bacteria larger than 1? , if not set to 0  (protects form running into small number errors)
                                 else if(df_CS$RA[i]*V>=1) {
                                   RA_t    <-  df_CS$RA[i]
                                 } else{
                                   RA_t    <- 0}
                                 
                                 
-                                
+                                # is RB NA?, set to 0
                                 if(is.na(df_CS$RB[i])){
                                   RB_t    <- 0
                                   
-                                  
+                                  #is the total number of RB bacteria larger than 1? , if not set to 0 (protects form running into small number errors)
                                 } else if(df_CS$RB[i]*V>=1) {
                                   RB_t  <-  df_CS$RB[i]
                                 } else{
                                   RB_t    <- 0}
                                 
-                                
+                                # is RAB NA?, set to 0
                                 if(is.na(df_CS$RARB[i])){
                                   RARB_t    <- 0
                                   
                                 }
                                 
+                                #is the total number of RAB bacteria larger than 1?, if not set to 0 (protects form running into small number errors)
                                 else if(df_CS$RARB[i]*V>=1) {
                                   RARB_t  <-  df_CS$RARB[i]
                                 } else {
                                   RARB_t    <- 0}
                                 
-                                
-                                # S_t    <-  df_CS$S[i]
-                                # RA_t   <- df_CS$RA[i]
-                                # RB_t   <- df_CS$RB[i]
-                                # RARB_t <- df_CS$RARB[i]
-                                
+                              #assign previous time point for A and B
                                 A_t  <- PK_mod$A[i]
                                 B_t  <- PK_mod$B[i]
                                 
                                 
-                                #cat(paste(i, S_t, RA_t, RB_t, RARB_t, "\n"), file = "Results/logs/mid2_log", append = T)
-                                
-                                
+            
                                 #-------------------
-                                # Mutations
+                                # Mutations (stochastic implementation)
+                                # 
+                                #same approach for all subpopulations that can mutate (S, RA, RB)
                                 
-                                
-                                
-                                
+                                # S to RA
+                                # check if the number of bacteria can be converted to integer (needed for random sampling)
+                                # Workaround to avoid issues with too large numbers (> 10^9), 
+  
                                 if(is.na(as.integer( S_t*V ))) {
                                   
                                   n_itr <- floor(S_t*V/10^9)
                                   
                                   res_t <- floor(S_t*V - n_itr*10^9)
                                   
+                                  # calculate how many S bacteria will mutant into RA over one hour with work around
+                                  
                                   GR_SRA  <- sum(rbinom(n_itr, 10^9, U_1), rbinom( 1, res_t, U_1))
                                   
                                   
                                 } else if (as.integer( S_t*V )>0) {
-                                  
+                                  # calculate how many S bacteria will mutant into RA over one hour w/o work around
                                   GR_SRA    <- rbinom(1, as.integer( S_t*V ), U_1)
                                   
                                 } else {
+                                  # no bacteria available for mutation
                                   GR_SRA    <- 0
                                 }
                                 
                                 
                                 
-                                
+                                # S to RB
                                 if(is.na(as.integer( S_t*V ))) {
                                   
                                   n_itr <- floor(S_t*V/10^9)
@@ -433,7 +441,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                                 }
                                 
                                 
-                                
+                                # RA to RAB
                                 if(is.na(as.integer( RA_t*V ))) {
                                   
                                   n_itr <- floor(RA_t*V/10^9)
@@ -453,7 +461,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                                 
                                 
                                 
-                                
+                                #RB to RAB
                                 if(is.na(as.integer( RB_t*V ))) {
                                   
                                   n_itr <- floor(RB_t*V/10^9)
@@ -472,7 +480,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                                 }
                                 
                                 
-                                # cat(paste(ii, GR_SRA, GR_SRB, GR_RARARB, GR_RBRARB, "\n"), file = "Results/logs/mid_log", append = T)
+                              # adding the mutation rates covariates to be used for the specific time step
                                 
                                 ev <- eventTable(amount.units="mg", time.units="hours") %>%
                                   add.sampling(seq(0,1))  %>%
@@ -483,10 +491,12 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                                   as.tbl()
                                 
                                 
-                                
+                                #initiate model with previous time step
                                 t_inits <- c(S = S_t, RA = RA_t, RB = RB_t, RARB = RARB_t,
                                              A = A_t, B = B_t);
                                 
+                                
+                                #run the model for specific time step
                                 x_CS   <- as.data.frame(CS_mod$run(theta, ev,  t_inits)) %>%
                                   mutate(time = time + i-1)
                                 
@@ -494,13 +504,11 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                                 
                                 
                                 
-                                
-                                
-                                
-                                
                               }
-                              
+                              # Add name of dosing regimen to data frame
                               df_CS$model <- dose_reg[i_mod] 
+                              
+                              # bind all simulation for specific realization ii 
                               
                               df_model_CS <- df_model_CS %>%
                                 bind_rows(df_CS)
@@ -509,38 +517,38 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
                             
                             
                             
-                            
+                            # add realization identifyer
                             df_model_CS$index <- ii
                             
-                            # 
-                            d_time <- round( Sys.time()- i_time )
-                            
-                            
-                            
+                              
+                            #return simulated data for all dosing regimen per realization ii
                             return(df_model_CS)
                             
                             
                             
                           }
   
-  #sink()
+  
+  # output from parallel model runs are bound together into df_full_CS 
   
   mean_dat <-  df_full_CS %>% 
-    gather(value = "CFU", key = "Population", - time, -A, -B, -index, -model) %>% 
+    gather(value = "CFU", key = "Population", - time, -A, -B, -index, -model) %>% #make into long format
     group_by(time, model, index) %>%
-    mutate(total = sum(CFU)) %>%
+    mutate(total = sum(CFU)) %>% #calculate  total CFU per realization, time point and dosing regimen
     ungroup() %>%
     mutate(CFU_ratio = CFU/total) %>%
+    #reorder levels of bacterial subpopulations 
     mutate(Order = ifelse(Population == "S", 1,
                           ifelse(Population == "RA", 2,
                                  ifelse(Population == "RB", 3, 4)))) %>%
     mutate(Population = reorder(Population, Order)) %>% 
     ungroup() %>%
     group_by(model, index, time) %>% 
-    mutate(CFU_total = sum(CFU, na.rm = T)) %>% 
+    mutate(CFU_total = sum(CFU, na.rm = T)) %>%  #calculate  total CFU per realization, time point and dosing regimen
     ungroup() %>% 
     group_by(time, model, Population) %>% 
-    mutate(CFU_MEDIAN = median(CFU, na.rm = T),
+    #calculate metrics relating to CFU per time point and dosing regimen
+    mutate(CFU_MEDIAN = median(CFU, na.rm = T), 
            CFU_SD   = sd(CFU, na.rm = T), 
            CFU_95   = quantile(CFU, .95, na.rm = T),
            CFU_05   = quantile(CFU, .05, na.rm = T),
@@ -549,6 +557,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
            CFU_T_SD   = sd(CFU_total, na.rm = T), 
            CFU_T_95   = quantile(CFU_total, .95, na.rm = T),
            CFU_T_05   = quantile(CFU_total, .05, na.rm = T),
+           #including specific model parameters
            CS_A = CS_A,
            CS_B = CS_B,
            HILL_A = HILL_A,
@@ -560,6 +569,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
     ungroup() %>% 
     
     group_by( Population, model, index) %>% 
+    #calculating time when subpopulations are over initial bacterial number [not using, remove?]
     mutate(T_10_6 = min(ifelse(CFU >= S0,
                                time, NA), na.rm = T)) %>% 
     ungroup() %>% 
@@ -569,6 +579,7 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
            day_id  = ifelse(is.wholenumber(time/24), index, 0),
            Day_CFU = ifelse(is.wholenumber(time/24), CFU, NA) ,
            Day_T_CFU = ifelse(is.wholenumber(time/24), CFU_total, NA)) %>% 
+    #Calculation the number of realization having resistance (per subpopulation R) and total resistance subpopulations (R_T) per day *_Day_dev or end of treatment *_Dev
     mutate(R_Dev = sum(End_CFU >= 10^eB0, na.rm = T),
            R_T_Dev = sum(End_T_CFU >= 10^eB0, na.rm = T),
            R_Day_Dev = sum(Day_CFU >= 10^eB0, na.rm = T),
@@ -591,7 +602,6 @@ CS_model <- function(t_half = 5, F_Css_MIC = 1, v_Models = c("Mono A", "Mono B",
   
   return(mean_dat)
   
-  # write.csv(all_res, paste(Sys.Date(), "_CS_model_output.csv", sep = ""))
   
   
 }
